@@ -1,0 +1,119 @@
+# ============================================================
+# 服务器部署编排（独立 Docker 项目 fashion-cs）
+#
+# 特点：
+# 1. 只新增 3 个容器：app / qdrant / neo4j，不动其他项目容器
+# 2. MySQL 复用服务器已有的 stack-mysql（新建独立库 + 独立账号），
+#    避免在 2G 内存机器上再起一个 MySQL 实例把内存撑爆
+# 3. 全部设置 mem_limit，防止单一项目拖垮整机
+# 4. 仅对外暴露 3002（沿用原消课系统释放出的端口），数据库端口不对外
+#
+# 使用：
+#   cp .env.server.example .env    # 按实际填写密码
+#   docker compose -f docker-compose.server.yml up -d --build
+# ============================================================
+name: fashion-cs
+
+services:
+  # ---------------- 后端 + 前端静态页面 ----------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fashion-cs-app:1.0
+    container_name: fashion-cs-app
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      # MySQL：复用现有 stack-mysql 实例
+      MYSQL_HOST: ${MYSQL_HOST:-stack-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DB: ${MYSQL_DB:-fashion_cs}
+      MYSQL_USER: ${MYSQL_USER:-fashion_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      # Qdrant / Neo4j：本编排内部服务
+      QDRANT_URL: http://qdrant:6333
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      # 登录与管理
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
+      JWT_SECRET: ${JWT_SECRET}
+      # 路径
+      UPLOAD_DIR: /app/backend/uploads
+      DIST_DIR: /app/frontend/dist
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+    ports:
+      - "3002:8000"
+    volumes:
+      - fashion_uploads:/app/backend/uploads
+    depends_on:
+      qdrant:
+        condition: service_started
+      neo4j:
+        condition: service_started
+    networks:
+      - fashion-net
+      - stack-net
+    # 2G 内存机器：限制上限，超了只杀自己，不影响其他项目
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------- 向量库 ----------------
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: fashion-cs-qdrant
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - fashion_qdrant:/qdrant/storage
+    networks:
+      - fashion-net
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  # ---------------- 知识图谱 ----------------
+  neo4j:
+    image: neo4j:5.26.0
+    container_name: fashion-cs-neo4j
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NEO4J_AUTH: neo4j/***
+      # 小内存专用配置：堆 256M + 页缓存 128M，足够存放演示规模图谱
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 256m
+      NEO4J_server_memory_pagecache_size: 128m
+    volumes:
+      - fashion_neo4j:/data
+    networks:
+      - fashion-net
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+networks:
+  fashion-net:
+    name: fashion-net
+  # 复用现有 stack 网络，仅用于访问 stack-mysql；不改动该网络
+  stack-net:
+    external: true
+    name: ${STACK_NETWORK:-stack-net}
+
+volumes:
+  fashion_uploads:
+  fashion_qdrant:
+  fashion_neo4j:

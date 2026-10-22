@@ -1,0 +1,75 @@
+# ============================================================
+# 基础设施编排：MySQL + Qdrant + Neo4j
+#
+# 推荐用法（本机已有 MySQL 时，只启动向量库和图数据库）：
+#   docker compose up -d
+#
+# 本机没有 MySQL 时（用 Docker 提供 MySQL，端口映射到 3307 避免冲突）：
+#   docker compose --profile with-mysql up -d
+#   同时把 .env 里的 MYSQL_PORT 改成 3307
+#
+# 停止：docker compose down
+# 清空数据并重建：docker compose down -v（谨慎，会删除知识库数据）
+# ============================================================
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: fashion-cs-mysql
+    restart: unless-stopped
+    # 使用 profile：默认 docker compose up -d 不会启动本服务，避免和本机已安装的 MySQL 抢 3306 端口
+    profiles: ["with-mysql"]
+    environment:
+      MYSQL_ROOT_PASSWORD: "***"
+      MYSQL_DATABASE: "fashion_cs"
+      TZ: "Asia/Shanghai"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      # 宿主机用 3307，避免与本机 MySQL 的 3306 冲突；后端 MYSQL_PORT 需改为 3307
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 首次启动自动执行初始化 SQL（建表 + 默认管理员 + Agent 配置 + 演示商品）
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: fashion-cs-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # HTTP / Dashboard: http://localhost:6333/dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  neo4j:
+    image: neo4j:5.26.0
+    container_name: fashion-cs-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: "neo4j/***"
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "1G"
+      NEO4J_server_memory_pagecache_size: "512m"
+      TZ: "Asia/Shanghai"
+    ports:
+      - "7474:7474"   # Browser: http://localhost:7474
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p *** 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+volumes:
+  mysql_data:
+  qdrant_data:
+  neo4j_data:
